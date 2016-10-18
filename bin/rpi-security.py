@@ -150,34 +150,16 @@ def telegram_send_photo(file_path):
         logger.info('Telegram file sent: %s' % file_path)
         return True
 
-def arp_ping_macs(mac_addresses, repeat=1):
+def arp_ping_macs(mac_addresses):
     """
-    Performs an ARP scan of a destination MAC address to try and determine if they are present on the network.
+    Performs an ARP scan of a destination network to try and determine if monitored devices are present on the network.
     """
-    def _arp_ping(mac_address, ip_address):
-        result = False
-        answered,unanswered = srp(Ether(dst=mac_address)/ARP(pdst=ip_address), timeout=1, verbose=False)
-        if len(answered) > 0:
-            for reply in answered:
-                if reply[1].hwsrc == mac_address:
-                    if type(result) is not list:
-                        result = []
-                    result.append(str(reply[1].psrc))
-                    result = ', '.join(result)
-        return result
-    while repeat > 0:
-        if time.time() - alarm_state['last_packet'] < 30:
-            break
-        for mac_address in mac_addresses:
-            result = _arp_ping(mac_address, config['network_address'])
-            if result:
-                logger.debug('MAC %s responded to ARP ping with address %s' % (mac_address, result))
-                break
-            else:
-                logger.debug('MAC %s did not respond to ARP ping' % mac_address)
-        if repeat > 1:
-            time.sleep(2)
-        repeat -= 1
+    logger.info("thread running")    
+    while True:
+        if time.time() - alarm_state['last_packet'] > 300:
+            logger.debug('Attempting ARP scan of subnet to wake up monitored devices')
+            answered,unanswered = srp(Ether(dst='ff:ff:ff:ff:ff:ff')/ARP(pdst=config['network_address']), timeout=1, verbose=False)
+        time.sleep(30)
 
 def process_photos():
     """
@@ -188,22 +170,11 @@ def process_photos():
     logger.info("thread running")
     while True:
         if len(captured_photos) > 0:
-            if alarm_state['current_state'] == 'armed':
-                arp_ping_macs(mac_addresses=config['mac_addresses'], repeat=3)
-                for photo in list(captured_photos):
-                    if alarm_state['current_state'] != 'armed':
-                        break
-                    logger.debug('Processing the photo: %s' % photo)
-                    alarm_state['alarm_triggered'] = True
-                    if telegram_send_photo(photo):
-                        archive_photo(photo)
-                        captured_photos.remove(photo)
-            else:
-                logger.debug('Stopping photo processing as state is now %s' % alarm_state['current_state'])
-                for photo in list(captured_photos):
-                    logger.info('Removing photo as it is a false positive: %s' % photo)
+            for photo in list(captured_photos):
+                logger.debug('Processing the photo: %s' % photo)
+                if telegram_send_photo(photo):
+                    archive_photo(photo)
                     captured_photos.remove(photo)
-                    # Delete the photo file
         time.sleep(5)
 
 def capture_packets(network_interface, network_interface_mac, mac_addresses):
@@ -248,8 +219,6 @@ def monitor_alarm_state():
         if alarm_state['current_state'] != 'disabled':
             if now - alarm_state['last_packet'] > config['packet_timeout'] + 20:
                 update_alarm_state('armed')
-            elif now - alarm_state['last_packet'] > config['packet_timeout']:
-                arp_ping_macs(config['mac_addresses'])
             else:
                 update_alarm_state('disarmed')
 
@@ -442,6 +411,9 @@ if __name__ == "__main__":
     process_photos_thread = Thread(name='process_photos', target=process_photos)
     process_photos_thread.daemon = True
     process_photos_thread.start()
+    arp_ping_macs_thread = Thread(name='arp_ping_macs', target=arp_ping_macs, kwargs={'mac_addresses': config['mac_addresses']})
+    arp_ping_macs_thread.daemon = True
+    arp_ping_macs_thread.start()
     signal.signal(signal.SIGTERM, exit_clean)
     time.sleep(2)
     try:
