@@ -113,7 +113,7 @@ def take_photo(output_file):
         time.sleep(0.25)
         GPIO.output(32, False)
     try:
-        camera.capture(output_file)
+        camera.capture(output_file, quality=15)
         logger.info("Captured image: %s" % output_file)
     except Exception as e:
         logger.error('Failed to take photo: %s' % e)
@@ -158,7 +158,16 @@ def arp_ping_macs(mac_addresses):
     while True:
         if time.time() - alarm_state['last_packet'] > 300:
             logger.debug('Attempting ARP scan of subnet to wake up monitored devices')
+            # answered,unanswered = srp(Ether(dst='ff:ff:ff:ff:ff:ff')/ARP(pdst=config['network_address']), timeout=1, verbose=False, inter=0.2)
             answered,unanswered = srp(Ether(dst='ff:ff:ff:ff:ff:ff')/ARP(pdst=config['network_address']), timeout=1, verbose=False)
+            # response = False
+            # if len(answered) > 0:
+            #     for reply in answered:
+            #         if reply[1].hwsrc in mac_addresses:
+            #             response = True
+            #             logger.debug('MAC %s responded to ARP scan with address %s' % (str(reply[1].hwsrc), str(reply[1].psrc)))
+            # if response == False:
+            #     logger.debug('No monitored device responded to ARP scan')
         time.sleep(30)
 
 def process_photos():
@@ -286,6 +295,19 @@ def telegram_bot(token):
     logger.info("thread running")
     updater.start_polling(timeout=10)
 
+def play_alarm():
+    """
+    Play alarm using MPDClient
+    """
+    client.connect("192.168.1.104", 6600)
+    client.stop()
+    client.clear()
+    client.repeat(0)
+    client.add('sounds/siren.wav')
+    client.play()
+    client.close()
+    client.disconnect()
+
 def motion_detected(channel):
     """
     Capture a photo if motion is detected and the alarm state is armed
@@ -293,6 +315,9 @@ def motion_detected(channel):
     current_state = alarm_state['current_state']
     if current_state == 'armed':
         logger.info('Motion detected')
+        play_alarm()
+        alarm_state['alarm_triggered'] = True
+        telegram_send_message('rpi-security: *%s*' % 'motion detected!')
         file_prefix = config['image_path'] + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S")
         for i in range(0, 5, 1):
             camera_output_file = "%s-%s.jpeg" % (file_prefix, i)
@@ -369,18 +394,21 @@ if __name__ == "__main__":
     import picamera
     logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
     from scapy.all import srp, Ether, ARP
-    from scapy.all import conf as scapy_conf
-    scapy_conf.promisc=0
-    scapy_conf.sniff_promisc=0
+    # from scapy.all import conf as scapy_conf
+    # scapy_conf.promisc=0
+    # scapy_conf.sniff_promisc=0
     import telegram
     from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, RegexHandler
     from threading import Thread, current_thread
+    from mpd import MPDClient
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(32, GPIO.OUT, initial=False)
     try:
         camera = picamera.PiCamera()
-        camera.resolution = (2592, 1944)
+        # camera.resolution = (2592, 1944)
+        camera.resolution = (1280, 720)
         camera.vflip = True
+        camera.hflip = True
         camera.led = False
     except Exception as e:
         exit_error('Camera module failed to intialise with error %s' % e)
@@ -388,6 +416,11 @@ if __name__ == "__main__":
         bot = telegram.Bot(token=config['telegram_bot_token'])
     except Exception as e:
         exit_error('Failed to connect to Telegram with error: %s' % e)
+    try:
+        client = MPDClient()
+	client.timeout = 10
+    except Exception as e:
+        exit_error('MPDClient failed to initialise with error: %s' % e)
     # Set the initial alarm_state dictionary
     alarm_state = {
         'start_time': time.time(),
@@ -418,9 +451,9 @@ if __name__ == "__main__":
     time.sleep(2)
     try:
         GPIO.setup(config['pir_pin'], GPIO.IN)
-        GPIO.add_event_detect(config['pir_pin'], GPIO.RISING, callback=motion_detected)
+        GPIO.add_event_detect(config['pir_pin'], GPIO.RISING, callback=motion_detected, bouncetime=15000)
         logger.info("rpi-security running")
-        telegram_send_message('rpi-security running')
+        telegram_send_message('rpi-security: *%s*' % 'running')
         while 1:
             time.sleep(100)
     except KeyboardInterrupt:
